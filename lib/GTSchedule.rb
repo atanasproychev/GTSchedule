@@ -23,14 +23,15 @@ module GT
       # p line_numbers
       line_numbers.each do |type, numbers|
         line_objects = []
-        numbers.each { |number| line_objects << Line.new(number, type, @type[0], 5) }
+        numbers.each { |number| line_objects << Line.new(number, type, @type[0]) }
         @lines[type] = line_objects.sort { |line1, line2| line1.number.to_i <=> line2.number.to_i }
       end
-      p HOME_DIRECTORY
+      # p HOME_DIRECTORY
     end
     
     def get_lines
-      document = GTSchedule.parse "Home.html"
+      # document = GTSchedule.parse "Home.html"
+      document = GTSchedule.parse ""
       lines = {}
       sections = document.css(".lines_section")
       sections.each_with_index do |section, index|
@@ -46,13 +47,17 @@ module GT
                end
         lines.merge!({type => numbers}) { |key, old, new| old + new }
       end
-      lines
+      lines.merge!({:metro => ['1']})
+      # lines
     end
   
     def self.parse(url = nil)
       # new_html = open("http://schedules.sofiatraffic.bg/autobus/102").read  #IO.read(File.expand_path("../../test102.html"))
       # p __FILE__
-      html = IO.read(File.expand_path("../../../#{url}", __FILE__))
+      p url
+      # html = IO.read(File.expand_path("../../../#{url}", __FILE__))
+      html = self.get_html_from "http://schedules.sofiatraffic.bg/#{url}"
+      # p html, "\n\n"
       document = Nokogiri::HTML::Document.parse(html, nil, "utf-8")
       
       #File.open(File.expand_path("../../test.txt")) { |file| new_html << file.read }
@@ -74,7 +79,8 @@ module GT
       # end
     end
     
-    def get_html_from(site)
+    def self.get_html_from(site)
+      # open(site) { |f| f.each_line { |line| p line } }#.read
       open(site).read
     end
     
@@ -92,15 +98,69 @@ module GT
         prawn_object.font 'CourierNew'
         
         create_content_pages prawn_object
-        @lines[:autobus].each { |line| line.to_pdf(prawn_object) }
+        [:autobus, :trolleybus, :tramway, :metro].each do |type_transport|
+          @lines[type_transport].each do |line|
+            line.change_type_of_schedule type
+            line.to_pdf(prawn_object)
+          end
+        end
         time = Time.new
-        name = "#{HOME_DIRECTORY}#{@type[0]}_#{time.day}_#{time.mon}_#{time.year}"
+        name = "#{HOME_DIRECTORY}pdf/#{type.capitalize}_#{time.day}_#{time.mon}_#{time.year}"
         prawn_object.render_file "#{name}.pdf"
       end
     end
     
     def create_content_pages(prawn_object)
       prawn_object.text "<b>Съдържание</b>", :inline_format => true, :size => 18, :align => :center
+      prawn_object.move_down 40
+      count_of_all_lines = @lines.inject(0) { |sum, (type, lines)| sum + lines.length }
+      displacement = (count_of_all_lines / 40.0).ceil
+      p displacement
+      page = displacement + 1
+      [:autobus, :trolleybus, :tramway, :metro].each do |type_transport|
+        max_dots = 75
+        type_transport_name = GTSchedule.transport_type_name type_transport
+        heading = type_transport_name.dup
+        heading[-1] = 'и' unless type_transport == :metro
+        heading << ' линии'
+        unless @lines[type_transport] == []
+          prawn_object.text "<b>#{heading}</b>", :inline_format => true, :size => 16
+          prawn_object.move_down 5
+        end
+        # p type_transport
+        @lines[type_transport].each do |line|
+          content_string = "%s линия %d" % [type_transport_name, line.number]
+          line.page = page
+          dots = max_dots - content_string.length
+          dots -= page > 9 ? 2 : 1
+          content_string << '.' * dots << page.to_s
+          prawn_object.text content_string, :inline_format => true
+          prawn_object.move_down 5
+          page += line.count_of_directions
+        end
+      end
+    end
+    
+    def self.schedule_name(type)
+      if type == :weekdays
+        'делник'
+      elsif type == :saturday
+        'предпразник'
+      elsif type == :sunday
+        'празник'
+      end
+    end
+    
+    def self.transport_type_name(type)
+      if type == :autobus
+        'Автобусна'
+      elsif type == :trolleybus
+        'Тролейбусна'
+      elsif type == :tramway
+        'Трамвайна'
+      elsif type == :metro
+        'Метро'
+      end
     end
   end
   
@@ -108,9 +168,12 @@ module GT
     attr_accessor :minutes, :hours
     
     def initialize(time)
+      # p time
       time.match /(\d?\d):(\d\d)/
-      @hours = $1
-      @minutes = $2
+      @hours = $1.to_i
+      @minutes = $2.to_i
+      # p @hours
+      # p @minutes
     end
     
     def +(minutes)
@@ -131,14 +194,15 @@ module GT
       if hours == -24
         hours = 0
       end
-      MyTime.new "#{hours}:#{minutes}"
+      time_string = "%02d:%02d" % [hours, minutes]
+      MyTime.new time_string
     end
     
     def self.minutes_to_min_sec(minutes)
       min = minutes.to_i
       sec = (minutes - min) * 100
       sec *= 0.6
-      "#{min}:#{sec.to_i}"
+      "%02d:%02d" % [min, sec.to_i]
     end
     
     def to_min
@@ -181,17 +245,18 @@ module GT
     
     def to_pdf(prawn_object)
       rgb_string = @incomplete ? ' rgb="FF0000"' : ''
-      prawn_object.text "<color#{rgb_string}>#{@begins.minutes}</color>", :inline_format => true, :align => :center
+      string = "<color%s>%02d</color>" % [rgb_string, @begins.minutes]
+      prawn_object.text string, :inline_format => true, :align => :center
     end
     
-    # def to_s
-      # @begins
-      # p @time
-    # end
+    def to_s
+      @begins
+      #p @time
+    end
   end
   
   class Direction
-    attr_accessor :course_list, :station_list
+    attr_accessor :name, :course_list, :station_list
 
     def initialize(name, time_to = nil)
       @name = name
@@ -234,12 +299,29 @@ module GT
       list.flatten.map { |course| course.vehicle }.uniq.length
     end
     
+    def average_interval_between(from, to)
+      time_list = @course_list[from - 4..to - 4].flatten.map(&:begins)#.map { |time| MyTime.new time }
+      # p time_list#.map(&:class)
+      return 0 if time_list == []
+      intervals = []
+      # arr = [1, 2, 3, 5, 8]
+      time_list.each_cons(2) { |a| intervals << a[1] - a[0] }
+      # p intervals
+      p (intervals.map(&:to_min).inject(0.0, :+) / intervals.length).floor
+    end
+    
+    def print_data(function, hours)
+      # "#{vehicles(4, 6)}-#{vehicles(7, 9)}-#{vehicles(10, 15)}-#{vehicles(16, 19)}-#{vehicles(21, 24)}"
+      function(4, 6)
+    end
+    
     def print_razstanovka
       "#{vehicles(4, 6)}-#{vehicles(7, 9)}-#{vehicles(10, 15)}-#{vehicles(16, 19)}-#{vehicles(21, 24)}"
+      # p print_data(vehicles, 'd')
     end
     
     def print_intervals
-      "NE"
+      "#{average_interval_between(4, 6)}-#{average_interval_between(7, 9)}-#{average_interval_between(10, 15)}-#{average_interval_between(16, 19)}-#{average_interval_between(21, 24)}"
     end
     
     def to_pdf(prawn_object)
@@ -295,14 +377,14 @@ module GT
       
       
       prawn_object.bounding_box([520, 250], :width => 250, :height => 100) do
-        prawn_object.stroke_bounds
+        # prawn_object.stroke_bounds
         last_station_incomplete = @course_list.flatten.select { |course| course.incomplete? }[0]
         # p last_station_incomplete
         # p @course_list
         if last_station_incomplete
           prawn_object.text "<color rgb='ff0000'>ЗА ГАРАЖ</color> до спирка:", :inline_format => true
           prawn_object.move_down 5
-          p last_station_incomplete.course_times
+          # p last_station_incomplete.course_times
           @station_list[last_station_incomplete.course_times.length - 1].to_pdf prawn_object, :center
           prawn_object.move_down 15
         end
@@ -310,16 +392,16 @@ module GT
         prawn_object.move_down 5
         prawn_object.text "Разстановка: #{print_razstanovka}"
         prawn_object.move_down 5
-        prawn_object.text "Интервали: #{print_intervals}"
-        prawn_object.move_down 5
-        prawn_object.text "(4%6-7%9-10%15-16%19-21%24)"
+        prawn_object.text "Интервали:  #{print_intervals}"
+        prawn_object.move_down 15
+        prawn_object.text "(4%6-7%9-10%15-16%19-21%24)", :align => :center
       end
       
       
     end
     
     def to_s
-      "#@name\n#@station_list\n#@time_list"
+      "#@name\n#@station_list\n#@course_list"
     end
   end
   
@@ -338,15 +420,15 @@ module GT
   end
   
   class Line
-    attr_accessor :number
+    attr_accessor :number, :page
     
-    def initialize(number, type, type_schedule, page, directions = [])
+    def initialize(number, type, type_schedule, page = 0, directions = [])
       @number, @type, @directions, @type_schedule, @page = number, type, directions, type_schedule, page
       get_directions if @directions == []
       # @directions.map { |dir| puts dir }
     end
     
-    def type_schedule_as_number
+    def schedule_type_as_number
       types = {:weekdays => 0, :saturday => 1, :sunday => 2}
       type_number = types[@type_schedule]
       if @froms.length - 1 < type_number
@@ -355,16 +437,29 @@ module GT
       type_number
     end
     
+    def count_of_directions
+      @directions.length
+    end
+    
+    def change_type_of_schedule(type_number)
+      @type_schedule = type_number
+      get_directions
+    end
+    
     def get_directions
-      @document = GTSchedule.parse "Line102.html"
+      p @document.class
+      # @document = GTSchedule.parse "Line#{@number}.html" if @document.nil?
+      @document = GTSchedule.parse "#@type/#@number" if @document.nil?
       
       @froms = []
       @document.css("h3 em").each { |date| @froms << date.text }
+      # @document.css("h3").each { |date| @froms << date.text }
+      # p @number, @froms
       @directions = []
       all_directions = @document.css(".schedule_view_direction_tabs li a span")
       number_of_directions_per_day = all_directions.length / @froms.length
       0.upto(number_of_directions_per_day - 1).each { |number| @directions[number] = Direction.new all_directions[number].text }
-      type_schedule_number = type_schedule_as_number
+      type_schedule_number = schedule_type_as_number
       @directions.each_with_index do |direction, index|
         index_special = index + number_of_directions_per_day * type_schedule_number
         times = @document.css(".schedule_times")[index_special].css(".hours_cell")
@@ -398,34 +493,20 @@ module GT
         direction.station_list = station_list
         # direction.average_course_times.each { |minutes| MyTime.minutes_to_min_sec minutes }
       end
-      # p @directions.length
+      # p @directions[0]
     end
     
     def to_pdf(prawn_object)
-      type_name = if @type == :autobus
-                    'Автобусна'
-                  elsif @type == :trolleybus
-                    'Тролейбусна'
-                  elsif @type == :tramway
-                    'Трамвайна'
-                  elsif @type == :metro
-                    'Метро'
-                  end
-      type_schedule_name = if @type_schedule == :weekdays
-                             'делник'
-                           elsif @type_schedule == :saturday
-                             'предпразник'
-                           elsif @type_schedule == :sunday
-                             'празник'
-                           end
-      @directions.each do |direction|
+      type_name = GTSchedule.transport_type_name(@type)
+      type_schedule_name = GTSchedule.schedule_name(@type_schedule)
+      @directions.each_with_index do |direction, index|
         prawn_object.start_new_page(:layout => :landscape, :size => 'A4')
         prawn_object.move_up 10
         prawn_object.text "<b>#{type_name} линия #{number} - #{type_schedule_name}</b>", :inline_format => true, :align => :center, :size => 16
         prawn_object.move_down 5
-        prawn_object.text "<i>от #{@froms[type_schedule_as_number]}г.</i>", :inline_format => true, :align => :center
+        prawn_object.text "<b>#{direction.name}</b> <i>от #{@froms[schedule_type_as_number]}г.</i>", :inline_format => true, :align => :center
         direction.to_pdf prawn_object
-        prawn_object.text_box "Стр. #@page", :at => [650, 10], :width => 100
+        prawn_object.text_box "Стр. #{@page + index}", :at => [650, 10], :width => 100
       end
     end
     
@@ -436,7 +517,12 @@ module GT
 end
 
 
-sche = GT::GTSchedule.new [:weekdays], :autobus => ['102']#, :autobus => ['1', '5', '204'], :trolleybus => ['2', '9'], :tramway => ['10']
-sche.to_pdf
+# sche = GT::GTSchedule.new [:weekdays, :saturday], :autobus => ['102', '204'], :tramway => ['5'], :metro => ['1']#, :autobus => ['1', '5', '204'], :trolleybus => ['2', '9'], :tramway => ['10']
+# sche.to_pdf
+GT::GTSchedule.new([:weekdays], :autobus => ['102', '204', '94'], :trolleybus => ['2', '9'], :tramway => ['10']).to_pdf
+# GT::GTSchedule.new([:weekdays], :trolleybus => ['1', '2', '4', '5', '6', '7', '9', '11']).to_pdf
 # GT::GTSchedule.parse
 # GT::Course.new '8:55', "Raz.exec ('show_course', ['1c79b7fbb', '10,535,536,538,539,540,541,542,543,544,547,548,,,,,,,,,,,,,,,,,,,,,,,']); return false;"
+# dir = GT::Direction.new("Test")
+# dir.course_list = [[], ['5:00', '5:15', '5:30', '5:45'], ['6:00', '6:14', '6:28', '6:41', '6:54'], ['7:07', '7:19', '7:32', '7:45', '7:59'], ['8:13', '8:29', '8:46', '8:55'], ['9:04', '9:22', '9:31', '9:40', '9:58'], ['10:16', '10:25', '10:34', '10:52'], ['11:10', '11:28', '11:46'], ['12:04', '12:22', '12:40', '12:58'], ['13:16', '13:34', '13:52'], ['14:10', '14:28', '14:46'], ['15:03', '15:19', '15:34', '15:49'], ['16:03', '16:16', '16:29', '16:42', '16:55'], ['17:08', '17:21', '17:34', '17:47'], ['18:00', '18:13', '18:26', '18:39', '18:53'], ['19:07', '19:22', '19:38', '19:47', '19:56'], ['20:09', '20:21', '20:37', '20:47'], ['21:00', '21:13', '21:39'], ['22:04', '22:29', '22:55'], ['23:20', '23:45'], []]
+# dir.average_interval_between 5, 6
